@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+taskpulse.db
+.env
+rustup-init.exe
+totest.txt
