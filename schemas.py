@@ -1,41 +1,29 @@
 from pydantic import BaseModel
-from typing import List
-from datetime import date
+
 
 class UserCreate(BaseModel):
     name: str
 
-class UserResponse(BaseModel):
-    id: int
-    name: str
-    xp: int
-    streak: int
 
-    class Config:
-        orm_mode = True
-
-class HabitCreate(BaseModel):
-    habit_name: str
-    frequency: str = "daily"
-
-class HabitResponse(BaseModel):
-    id: int
+class TaskCreate(BaseModel):
     user_id: int
-    habit_name: str
-    frequency: str
+    summary: str
 
-    class Config:
-        orm_mode = True
 
-class TaskCompletionCreate(BaseModel):
-    habit_id: int
-    completion_date: date
+class QuizSubmit(BaseModel):
+    task_id: int
+    score: int
+    time_taken: int
+    attempts: int
+    avg_user_score: int
+    tasks_completed_today: int
+    account_age_days: int
+    previous_rewards: int
+    time_of_day: int
 
-class LeaderboardEntry(BaseModel):
-    id: int
-    name: str
-    xp: int
-    streak: int
+
+class RewardHistoryResponse(BaseModel):
+    reward_name: str
 
     class Config:
         orm_mode = True
