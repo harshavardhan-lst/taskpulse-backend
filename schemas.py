@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from typing import List
 
 
 class UserCreate(BaseModel):
@@ -12,7 +13,7 @@ class TaskCreate(BaseModel):
 
 class QuizSubmit(BaseModel):
     task_id: int
-    score: int
+    answers: List[str]
     time_taken: int
     attempts: int
     avg_user_score: int
@@ -26,4 +27,4 @@ class RewardHistoryResponse(BaseModel):
     reward_name: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True   # Updated for Pydantic v2
