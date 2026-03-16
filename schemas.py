@@ -1,18 +1,16 @@
 from pydantic import BaseModel
-from typing import List
-
+from typing import List, Dict, Any
 
 class UserCreate(BaseModel):
     name: str
-
 
 class TaskCreate(BaseModel):
     user_id: int
     summary: str
 
-
 class QuizSubmit(BaseModel):
     task_id: int
+    questions: List[Any]  # The exact questions (text, type, options) generated
     answers: List[str]
     time_taken: int
     attempts: int

@@ -1,12 +1,27 @@
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
+import os
+import json
+from google import genai as genai_client
+from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from database import Base, engine, SessionLocal
 import models
 import schemas
 import joblib
-import os
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+
+load_dotenv()
+_gemini_client = None
+
+def get_gemini_client():
+    global _gemini_client
+    if _gemini_client is None:
+        api_key = os.getenv("GEMINI_API_KEY")
+        if api_key:
+            _gemini_client = genai_client.Client(api_key=api_key)
+    return _gemini_client
 
 # ==============================
 # Load AI Models
@@ -17,6 +32,14 @@ embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="TaskPulse Backend")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 model_path = os.path.join("ml", "fraud_model.pkl")
 
@@ -41,19 +64,73 @@ def get_db():
 # ==============================
 
 def generate_quiz(summary: str):
-    questions = [
-        "What was the main task completed?",
-        "What was the result of the task?",
-        "What did you learn from this task?"
+    """
+    Uses Google Gemini to generate 1 theory question and 2 MCQs based on the user's task summary.
+    """
+    
+    fallback = [
+        {"id": 0, "type": "theory", "question": "What was the main task completed?", "expected_answer": summary},
+        {"id": 1, "type": "mcq", "question": "Was it completed successfully?", "options": ["Yes", "No", "Maybe", "I don't know"], "expected_answer": "Yes"},
+        {"id": 2, "type": "mcq", "question": "How did you feel?", "options": ["Good", "Bad", "Okay", "Tired"], "expected_answer": "Good"}
     ]
+    
+    if not os.getenv("GEMINI_API_KEY"):
+        return fallback, [] # Second element unused now
+        
+    prompt = f"""
+    The user completed a habit/task with this summary: "{summary}"
+    
+    Generate exactly 3 specific questions about this task to verify they actually did it.
+    Question 1 MUST be a "theory" question requiring a text answer.
+    Questions 2 and 3 MUST be "mcq" (Multiple Choice) with exactly 4 "options".
+    
+    Return ONLY a JSON object in this exact format, with no markdown formatting or extra text:
+    {{
+      "questions": [
+        {{
+          "id": 0,
+          "type": "theory",
+          "question": "What algorithm did you use?",
+          "expected_answer": "Explanation of algorithm..."
+        }},
+        {{
+          "id": 1,
+          "type": "mcq",
+          "question": "Which of these is the correct logic?",
+          "options": ["A", "B", "C", "D"],
+          "expected_answer": "B"
+        }}
+      ]
+    }}
+    """
+    
+    try:
+        client = get_gemini_client()
+        if not client:
+            raise Exception("No Gemini client available")
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+        text = response.text.strip()
+        
+        if text.startswith("```json"):
+            text = text[7:-3].strip()
+        elif text.startswith("```"):
+            text = text[3:-3].strip()
+            
+        result = json.loads(text)
+        
+        if len(result.get("questions", [])) == 3:
+            return result["questions"], []
+        else:
+            print(f"Gemini returned {len(result.get('questions',[]))} questions, expected 3. Using fallback.")
+            return fallback, []
+            
+    except Exception as e:
+        print(f"Gemini Quiz Generation Error: {e}")
+        return fallback, []
 
-    correct_answers = [
-        summary,
-        "The task was completed successfully.",
-        "The task helped improve skills."
-    ]
-
-    return questions, correct_answers
 
 # ==============================
 # Create User
@@ -116,22 +193,48 @@ def submit_quiz(data: schemas.QuizSubmit, db: Session = Depends(get_db)):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    _, correct_answers = generate_quiz(task.summary)
-
     # --------------------------
-    # AI Semantic Scoring
+    # AI Gemini Scoring
     # --------------------------
-    score = 0
+    prompt = f"""
+    The user completed this task summary: "{task.summary}"
+    
+    They were asked the following verification questions:
+    {json.dumps(data.questions)}
+    
+    They provided the following answers respectively:
+    {json.dumps(data.answers)}
+    
+    Act as a strict teacher. Evaluate the answers for correctness.
+    If the answers do not make sense in response to the question, score them 0.
+    Provide a score between 0 and 30 (30 is perfect, 10 points per question).
+    Provide a short, educational explanation describing what they got right or wrong.
+    
+    Return ONLY a JSON object exactly like this:
+    {{
+      "score": 25,
+      "explanation": "Great job, but your first answer was too short..."
+    }}
+    """
 
-    for user_ans, correct_ans in zip(data.answers, correct_answers):
-        emb1 = embedding_model.encode([user_ans])
-        emb2 = embedding_model.encode([correct_ans])
-        similarity = cosine_similarity(emb1, emb2)[0][0]
-
-        # Weighted scoring (more intelligent)
-        score += similarity * 10
-
-    score = int(score)
+    try:
+        client = get_gemini_client()
+        if not client:
+            raise Exception("No Gemini client available")
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+        text = response.text.strip()
+        if text.startswith("```json"): text = text[7:-3].strip()
+        elif text.startswith("```"): text = text[3:-3].strip()
+        result = json.loads(text)
+        score = int(result.get("score", 0))
+        explanation = result.get("explanation", "Verification complete.")
+    except Exception as e:
+        print(f"Gemini Evaluation Error: {e}")
+        score = 15  # Default pass
+        explanation = "AI evaluation unavailable. Default score provided."
 
     # --------------------------
     # Fraud Detection
@@ -177,10 +280,11 @@ def submit_quiz(data: schemas.QuizSubmit, db: Session = Depends(get_db)):
     db.commit()
 
     return {
-        "score": score,
+        "score": int(score),
         "fraud_probability": float(fraud_probability),
-        "passed": passed,
-        "reward_granted": reward_granted
+        "passed": bool(passed),
+        "reward_granted": bool(reward_granted),
+        "explanation": str(explanation)
     }
 
 # ==============================
