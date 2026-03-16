@@ -1,6 +1,5 @@
 import os
 import json
-from google import genai as genai_client
 from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,9 +7,6 @@ from sqlalchemy.orm import Session
 from database import Base, engine, SessionLocal
 import models
 import schemas
-import joblib
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
 
 load_dotenv()
 _gemini_client = None
@@ -20,14 +16,32 @@ def get_gemini_client():
     if _gemini_client is None:
         api_key = os.getenv("GEMINI_API_KEY")
         if api_key:
-            _gemini_client = genai_client.Client(api_key=api_key)
+            try:
+                from google import genai as genai_client
+                _gemini_client = genai_client.Client(api_key=api_key)
+                print("Gemini client initialized successfully.")
+            except Exception as e:
+                print(f"Error initializing Gemini client: {e}")
+        else:
+            print("Warning: GEMINI_API_KEY not found in environment variables.")
     return _gemini_client
 
 # ==============================
 # Load AI Models
 # ==============================
 
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+_embedding_model = None
+
+def get_embedding_model():
+    global _embedding_model
+    if _embedding_model is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+            _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+            print("Embedding model loaded successfully.")
+        except Exception as e:
+            print(f"Error loading embedding model: {e}")
+    return _embedding_model
 
 Base.metadata.create_all(bind=engine)
 
@@ -42,11 +56,17 @@ app.add_middleware(
 )
 
 model_path = os.path.join("ml", "fraud_model.pkl")
+fraud_model = None
 
-if not os.path.exists(model_path):
-    raise RuntimeError("fraud_model.pkl not found inside ml folder.")
-
-fraud_model = joblib.load(model_path)
+try:
+    if not os.path.exists(model_path):
+        print(f"Warning: {model_path} not found. Fraud detection will be disabled.")
+    else:
+        import joblib
+        fraud_model = joblib.load(model_path)
+        print("ML model loaded successfully.")
+except Exception as e:
+    print(f"Error loading ML model: {e}")
 
 # ==============================
 # Database Dependency
@@ -250,7 +270,14 @@ def submit_quiz(data: schemas.QuizSubmit, db: Session = Depends(get_db)):
         data.time_of_day
     ]]
 
-    fraud_probability = fraud_model.predict_proba(features)[0][1]
+    if fraud_model:
+        try:
+            fraud_probability = fraud_model.predict_proba(features)[0][1]
+        except Exception as e:
+            print(f"Fraud prediction error: {e}")
+            fraud_probability = 0.5 # Neutral fallback
+    else:
+        fraud_probability = 0.2 # Default safe probability
 
     passed = score >= 15
     reward_granted = passed and fraud_probability < 0.6
