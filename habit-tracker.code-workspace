@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"name": "taskpulse-backend",
+			"path": "taskpulse-backend"
+		}
+	],
+	"settings": {}
+}
